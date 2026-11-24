@@ -195,7 +195,9 @@ sync_pins() {
     is_ifname "$dev" || continue
     # A peer that *is* the gateway needs no pin: the connected route already
     # carries it, and "/32 via itself" is not a usable nexthop.
-    [ "$peer" = "$via" ] && continue
+    if [ "$peer" = "$via" ]; then
+      continue
+    fi
     if [ -n "$via" ]; then
       "$IP" route replace "$peer/32" proto "$PROTO_PIN" via "$via" dev "$dev" ${src:+src "$src"} 2>/dev/null || true
     else
@@ -215,7 +217,9 @@ sync_pins() {
     peer="${dest%/32}"
     [ -n "$peer" ] || continue
     is_ipv4 "$peer" || continue
-    printf '%s\n' "$live" | grep -qxF -- "$peer" && continue
+    if printf '%s\n' "$live" | grep -qxF -- "$peer"; then
+      continue
+    fi
     "$IP" route del "$peer/32" proto "$PROTO_PIN" 2>/dev/null || true
   done
 }

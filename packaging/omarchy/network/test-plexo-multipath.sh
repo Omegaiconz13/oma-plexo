@@ -27,8 +27,11 @@ esac
 STUB
 chmod +x "$TMP/ip"
 
+# The driver runs under `set -eu` on purpose: the helper only declares `set -u`
+# today, but every `test ... && action` would abort the script if it ever gained
+# `set -e`, so sync_pins has to stay safe under the stricter mode.
 cat >"$TMP/driver.sh" <<'DRIVER'
-set -u
+set -eu
 source "$PRELUDE"
 IP="$FAKE_IP"
 SS="$SS_MODE"
