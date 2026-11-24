@@ -179,7 +179,11 @@ export class Multipath {
   /** Re-weight the live multipath default without disturbing pinned connections. */
   async applyWeights(): Promise<MultipathState> {
     if (Date.now() < this.weightsRefusedUntil) {
-      return this.cached?.value ?? { available: true, on: false, links: [], pins: 0 }
+      // Still backing off from a refusal. Report what is actually on the machine
+      // rather than a made-up "off": `on` drives the panel's switch, and a
+      // fabricating answer there would show the mode as off while its route is
+      // live. `status` is unprivileged, so this costs no sudo.
+      return this.cached?.value ?? this.state()
     }
     const state = await this.mutate('weights')
     if (state.error === SETUP_HINT) this.weightsRefusedUntil = Date.now() + REFUSED_RETRY_MS
