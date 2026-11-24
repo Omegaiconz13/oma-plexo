@@ -202,7 +202,13 @@ function scheduleMultipathRefresh(): void {
         if (settings.multipathEnabled !== true) return
         const state = await multipath.state()
         if (!state.on) {
-          if (state.links.length === 0 || state.available === false) await multipath.up()
+          // The preference is on and the route is not: re-arm it. This is the
+          // reconnect case — an interface going down takes its routes with it,
+          // including ours, so `on` goes false while the links come back. With
+          // two or more links the weights pass re-installs the default anyway,
+          // but below two links there is no weights pass, so without this the
+          // mode would stay off until someone toggled the switch by hand.
+          await multipath.up()
           return
         }
         const planned = await multipath.plan()
