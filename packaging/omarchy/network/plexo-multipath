@@ -177,6 +177,49 @@ pin_count() {
   "$IP" -4 route show proto "$PROTO_PIN" 2>/dev/null | grep -c . || true
 }
 
+# Install a /32 pin per established outbound connection, and remove the pins
+# whose connection has since ended. `up` and `weights` both change which uplink a
+# flow may take, so both re-pin first; the prune is what keeps the table the size
+# of the live flow count instead of growing for as long as the machine is up.
+# One `ss` snapshot serves both halves, so the set we install and the set we keep
+# can never disagree.
+sync_pins() {
+  local rows live peer dev via src dest
+  rows=$(pin_rows)
+
+  while IFS="$(printf '\t')" read -r peer dev via src; do
+    via=$(unmark "$via")
+    src=$(unmark "$src")
+    [ -n "$peer" ] || continue
+    is_ipv4 "$peer" || continue
+    is_ifname "$dev" || continue
+    # A peer that *is* the gateway needs no pin: the connected route already
+    # carries it, and "/32 via itself" is not a usable nexthop.
+    [ "$peer" = "$via" ] && continue
+    if [ -n "$via" ]; then
+      "$IP" route replace "$peer/32" proto "$PROTO_PIN" via "$via" dev "$dev" ${src:+src "$src"} 2>/dev/null || true
+    else
+      "$IP" route replace "$peer/32" proto "$PROTO_PIN" dev "$dev" ${src:+src "$src"} 2>/dev/null || true
+    fi
+  done <<< "$rows"
+
+  # Prune: anything we own that is no longer an open flow. A pin only exists to
+  # hold an *established* connection on its original uplink; once that flow is
+  # gone the pin is dead weight, and left in place it would keep growing forever.
+  # Without `ss` there is no snapshot to prune against, so leave the table alone
+  # rather than guessing that every flow has ended.
+  [ -n "$SS" ] || return 0
+  live=$(printf '%s\n' "$rows" | awk -F '\t' 'NF >= 3 && $1 != $3 { print $1 }' | sort -u)
+  "$IP" -4 route show proto "$PROTO_PIN" 2>/dev/null | awk '{print $1}' | sort -u |
+  while read -r dest; do
+    peer="${dest%/32}"
+    [ -n "$peer" ] || continue
+    is_ipv4 "$peer" || continue
+    printf '%s\n' "$live" | grep -qxF -- "$peer" && continue
+    "$IP" route del "$peer/32" proto "$PROTO_PIN" 2>/dev/null || true
+  done
+}
+
 # Read-only: the nexthops of the default route this script owns. Uses `ip -j`
 # because a route with a single nexthop — exactly the one-link case — is printed
 # by iproute2 as a plain route with no `nexthop` keyword, which a text parser
@@ -230,22 +273,8 @@ case "${1:-}" in
     sysctl -qw net.ipv4.fib_multipath_hash_policy=1 2>/dev/null || true
 
     # Pin connections that are already open before the default route changes:
-    # each keeps the uplink (and source address) it started on. Pins for
-    # connections that have since ended are left behind until `down`; they only
-    # mean a later connection to that peer goes through that uplink, which is
-    # still a working one.
-    while IFS="$(printf '\t')" read -r peer dev via src; do
-      via=$(unmark "$via")
-      src=$(unmark "$src")
-      [ -n "$peer" ] || continue
-      is_ipv4 "$peer" || continue
-      is_ifname "$dev" || continue
-      if [ -n "$via" ]; then
-        "$IP" route replace "$peer/32" proto "$PROTO_PIN" via "$via" dev "$dev" ${src:+src "$src"} 2>/dev/null || true
-      else
-        "$IP" route replace "$peer/32" proto "$PROTO_PIN" dev "$dev" ${src:+src "$src"} 2>/dev/null || true
-      fi
-    done <<< "$(pin_rows)"
+    # each keeps the uplink (and source address) it started on.
+    sync_pins
 
     # The multipath default: one nexthop per live uplink, equal weights. With a
     # single uplink this is an ordinary default route that happens to be ours.
@@ -329,18 +358,7 @@ case "${1:-}" in
     # Pin connections that are already open before the weights change: their
     # flow hash may now map to another link, and keeping the old uplink (and
     # source address) means no live stream is torn mid-transfer.
-    while IFS="$(printf '\t')" read -r peer dev via src; do
-      via=$(unmark "$via")
-      src=$(unmark "$src")
-      [ -n "$peer" ] || continue
-      is_ipv4 "$peer" || continue
-      is_ifname "$dev" || continue
-      if [ -n "$via" ]; then
-        "$IP" route replace "$peer/32" proto "$PROTO_PIN" via "$via" dev "$dev" ${src:+src "$src"} 2>/dev/null || true
-      else
-        "$IP" route replace "$peer/32" proto "$PROTO_PIN" dev "$dev" ${src:+src "$src"} 2>/dev/null || true
-      fi
-    done <<< "$(pin_rows)"
+    sync_pins
 
     args=(-4 route replace default proto "$PROTO_DEFAULT" metric "$METRIC_DEFAULT")
     while IFS="$(printf '\t')" read -r dev via w; do
